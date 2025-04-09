@@ -1,0 +1,34 @@
+name: Check Azure Boards Work Item Linked automatic
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  check-work-item:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Verificar se o PR está vinculado a um Work Item válido
+      - name: Validate Azure Boards Work Item
+        env:
+          AZURE_DEVOPS_ORG: ${{ secrets.AZURE_DEVOPS_ORG }}
+          AZURE_DEVOPS_PROJECT: ${{ secrets.AZURE_DEVOPS_PROJECT }}
+          AZURE_DEVOPS_PAT: ${{ secrets.AZURE_DEVOPS_PAT }}
+          GITHUB_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          # Instalar o curl e jq (se necessário)
+          sudo apt-get update && sudo apt-get install -y curl jq
+
+          # Obter os Work Items vinculados ao Pull Request
+          WORK_ITEMS=$(curl -s -u :$AZURE_DEVOPS_PAT \
+            "https://dev.azure.com/$AZURE_DEVOPS_ORG/$AZURE_DEVOPS_PROJECT/_apis/git/pullRequests?searchCriteria.repositoryId=$GITHUB_REPO&searchCriteria.pullRequestId=$PR_NUMBER&api-version=7.0" | \
+            jq -r '.value[0].workItemRefs[]?.id')
+
+          if [ -z "$WORK_ITEMS" ]; then
+            echo "No Azure Boards Work Item linked to this Pull Request."
+            exit 1
+          fi
+
+          echo "Work Items linked to this Pull Request: $WORK_ITEMS"
