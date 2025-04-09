@@ -13,14 +13,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      # Verificar se o PR está vinculado a um Work Item
-      - name: Check for Azure Boards Work Item
+      # Verificar se o PR está vinculado a um Work Item válido
+      - name: Validate Azure Boards Work Item
         env:
           AZURE_DEVOPS_ORG: ${{ secrets.AZURE_DEVOPS_ORG }}
           AZURE_DEVOPS_PROJECT: ${{ secrets.AZURE_DEVOPS_PROJECT }}
           AZURE_DEVOPS_PAT: ${{ secrets.AZURE_DEVOPS_PAT }}
         run: |
-          # Instalar o curl (se necessário)
+          # Instalar o curl e jq (se necessário)
           sudo apt-get update && sudo apt-get install -y curl jq
 
           # Obter o número do PR
@@ -30,18 +30,30 @@ jobs:
           COMMITS=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             "https://api.github.com/repos/${{ github.repository }}/pulls/$PR_NUMBER/commits")
 
-          # Verificar se há referência a um Work Item nos commits
-          WORK_ITEM_FOUND=false
+          # Procurar referências a Work Items no formato AB#123
+          WORK_ITEM_ID=""
           for commit in $(echo "$COMMITS" | jq -r '.[].commit.message'); do
-            if [[ $commit =~ AB#[0-9]+ ]]; then
-              WORK_ITEM_FOUND=true
+            if [[ $commit =~ AB#([0-9]+) ]]; then
+              WORK_ITEM_ID=${BASH_REMATCH[1]}
               break
             fi
           done
 
-          if [ "$WORK_ITEM_FOUND" = false ]; then
+          if [ -z "$WORK_ITEM_ID" ]; then
             echo "No Azure Boards Work Item linked to this PR."
             exit 1
           fi
 
-          echo "Azure Boards Work Item found in commit messages."
+          echo "Found Work Item ID: $WORK_ITEM_ID"
+
+          # Validar o Work Item usando a API do Azure DevOps
+          RESPONSE=$(curl -s -u :$AZURE_DEVOPS_PAT \
+            "https://dev.azure.com/$AZURE_DEVOPS_ORG/$AZURE_DEVOPS_PROJECT/_apis/wit/workitems/$WORK_ITEM_ID?api-version=7.0")
+
+          # Verificar se o Work Item é válido
+          if echo "$RESPONSE" | jq -e '.id' > /dev/null; then
+            echo "Work Item $WORK_ITEM_ID is valid."
+          else
+            echo "Work Item $WORK_ITEM_ID is not valid or does not exist."
+            exit 1
+          fi
