@@ -1,48 +1,56 @@
-name: Check Azure Boards Work Item - automatic
+name: Check Azure Boards Work Item - linked
 
 on:
   pull_request:
     types: [opened, synchronize, reopened]
 
 jobs:
-  check-work-item-automatic:
+  check-work-item:
     runs-on: ubuntu-latest
 
     steps:
       # Verificar se o PR está vinculado a um Work Item válido
-      - name: Validate Azure Boards Work Item
+      - name: Validate Azure Boards Development Link
         env:
           AZURE_DEVOPS_ORG: ${{ secrets.AZURE_DEVOPS_ORG }}
           AZURE_DEVOPS_PROJECT: ${{ secrets.AZURE_DEVOPS_PROJECT }}
           AZURE_DEVOPS_PAT: ${{ secrets.AZURE_DEVOPS_PAT }}
           GITHUB_REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
           # Instalar o curl e jq (se necessário)
           sudo apt-get update && sudo apt-get install -y curl jq
 
-          # Função para verificar os Work Items vinculados
-          check_work_items() {
-            curl -s -u :$AZURE_DEVOPS_PAT \
-              "https://dev.azure.com/$AZURE_DEVOPS_ORG/$AZURE_DEVOPS_PROJECT/_apis/git/pullRequests?searchCriteria.repositoryId=$GITHUB_REPO&searchCriteria.pullRequestId=$PR_NUMBER&api-version=7.0" | \
-              jq -r '.value[0].workItemRefs[]?.id'
-          }
+          # Obter todos os Work Items no projeto
+          WORK_ITEMS=$(curl -s -u :$AZURE_DEVOPS_PAT \
+            "https://dev.azure.com/$AZURE_DEVOPS_ORG/$AZURE_DEVOPS_PROJECT/_apis/wit/wiql?api-version=7.0" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "query": "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project"
+            }' | jq -r '.workItems[].id')
 
-          # Tentar verificar os Work Items com retries
-          MAX_RETRIES=5
-          RETRY_DELAY=10
-          for i in $(seq 1 $MAX_RETRIES); do
-            echo "Attempt $i of $MAX_RETRIES to check for linked work items..."
-            WORK_ITEMS=$(check_work_items)
+          if [ -z "$WORK_ITEMS" ]; then
+            echo "No work items found in the Azure Boards project."
+            exit 1
+          fi
 
-            if [ -n "$WORK_ITEMS" ]; then
-              echo "Work Items linked to this Pull Request: $WORK_ITEMS"
-              exit 0
-            fi
+          # Verificar se algum Work Item possui o PR como Development Link
+          PR_FOUND=false
+          for WORK_ITEM_ID in $WORK_ITEMS; do
+            LINKS=$(curl -s -u :$AZURE_DEVOPS_PAT \
+              "https://dev.azure.com/$AZURE_DEVOPS_ORG/$AZURE_DEVOPS_PROJECT/_apis/wit/workitems/$WORK_ITEM_ID?api-version=7.0" | \
+              jq -r '.relations[]? | select(.rel == "ArtifactLink") | .url')
 
-            echo "No work items found. Retrying in $RETRY_DELAY seconds..."
-            sleep $RETRY_DELAY
+            for LINK in $LINKS; do
+              if [[ "$LINK" == *"$PR_URL"* ]]; then
+                echo "Pull Request $PR_URL is linked to Work Item $WORK_ITEM_ID."
+                PR_FOUND=true
+                break 2
+              fi
+            done
           done
 
-          echo "No Azure Boards Work Item linked to this Pull Request after $MAX_RETRIES attempts."
-          exit 1
+          if [ "$PR_FOUND" = false ]; then
+            echo "No Azure Boards Work Item linked to this Pull Request."
+            exit 1
+          fi
